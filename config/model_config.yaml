@@ -1,0 +1,33 @@
+### LLM Configuration ###
+
+# OpenAI Settings
+openai:
+  api_key: ${OPENAI_API_KEY}
+  models:
+    default: "gpt-4"
+    embedding: "text-embedding-ada-002"
+  max_tokens: 2048
+  temperature: 0.7
+  request_timeout: 60
+
+# Anthropic Settings
+anthropic:
+  api_key: ${ANTHROPIC_API_KEY}
+  models:
+    default: "claude-3-opus-20240229"
+  max_tokens: 4096
+  temperature: 0.7
+  request_timeout: 60
+
+# Rate Limiting
+rate_limiting:
+  max_retries: 5
+  retry_delay: 1
+  max_requests_per_minute: 50
+
+# Caching
+cache:
+  enabled: true
+  ttl: 86400  # 24 hours in seconds
+  backend: "file"  # Options: file, redis
+  location: "../data/cache" 

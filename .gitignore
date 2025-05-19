@@ -1,0 +1,25 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+ENV/
+
+# Data folders
+data/cache/
+data/outputs/
+data/embeddings/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+
+# Jupyter Notebooks
+.ipynb_checkpoints 

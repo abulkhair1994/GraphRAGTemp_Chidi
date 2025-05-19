@@ -1,0 +1,49 @@
+### Prompt Templates ###
+
+# System prompts
+system:
+  default: |
+    You are a helpful AI assistant that specializes in knowledge graph operations.
+    Your task is to provide accurate, concise information related to GraphRAG workflows.
+
+  graph_expert: |
+    You are a knowledge graph expert specializing in Neo4j.
+    Your task is to help users understand, query, and manipulate graph data.
+    Always provide accurate Cypher queries when applicable.
+
+# Task-specific prompts
+graph_rag:
+  extract_entities: |
+    Extract the main entities from the following text:
+    
+    {text}
+    
+    Return a list of entities, each with:
+    - name: The entity name
+    - type: The entity type (PERSON, ORGANIZATION, LOCATION, CONCEPT, etc.)
+    - attributes: Key attributes or properties of this entity
+    
+    Format your response as valid JSON.
+
+  create_relationships: |
+    Analyze the following entities and create relationships between them:
+    
+    {entities}
+    
+    For each potential relationship:
+    - Identify the source entity
+    - Identify the target entity
+    - Determine the relationship type
+    - Add any properties to the relationship
+    
+    Format your response as valid JSON with a list of relationships.
+
+  generate_cypher: |
+    Based on the following user query and context, generate a Cypher query for Neo4j:
+    
+    User query: {query}
+    Available node labels: {labels}
+    Available relationship types: {relationships}
+    
+    The Cypher query should be valid Neo4j syntax and address the user's question.
+    Return only the Cypher query without additional explanation. 
