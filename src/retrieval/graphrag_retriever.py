@@ -46,7 +46,7 @@ class GraphRAGResult:
 
 
 class GraphRAGRetriever:
-    """Hybrid retriever combining vector and graph-based retrieval."""
+    """Hybrid retriever combining vector, graph, and text search."""
     
     def __init__(
         self,
@@ -55,13 +55,17 @@ class GraphRAGRetriever:
         neo4j_password: str,
         neo4j_database: str = "neo4j",
         embedding_model: Optional[Embeddings] = None,
-        vector_index_name: str = "document_embeddings",
-        vector_text_node_property: str = "page_content",
-        vector_embedding_node_property: str = "embedding",
-        vector_top_k: int = 5,
-        graph_max_nodes: int = 20,
-        graph_max_depth: int = 2,
-        node_label: Optional[str] = None,
+        vector_text_node_property: str = "text_content",
+        vector_embedding_node_property: str = "fastRP_embedding",
+        vector_embedding_dimension: int = 512,
+        vector_distance_metric: str = "cosine",
+        vector_node_label: str = "Content",
+        vector_search_type: str = "hybrid",
+        graph_max_hops: int = 2,
+        graph_max_nodes: int = 10,
+        text_search_threshold: float = 0.7,
+        vector_top_k: int = 3,
+        text_top_k: int = 3
     ):
         """Initialize the GraphRAG Retriever.
         
@@ -70,14 +74,18 @@ class GraphRAGRetriever:
             neo4j_username: Neo4j username
             neo4j_password: Neo4j password
             neo4j_database: Neo4j database name
-            embedding_model: LangChain embedding model
-            vector_index_name: Name of the vector index in Neo4j
-            vector_text_node_property: Node property containing the text
-            vector_embedding_node_property: Node property containing the embeddings
-            vector_top_k: Number of vector results to return
-            graph_max_nodes: Maximum number of nodes in graph results
-            graph_max_depth: Maximum traversal depth in graph
-            node_label: Optional specific node label to use for document nodes
+            embedding_model: Embedding model for generating embeddings
+            vector_text_node_property: Property containing text for vector search
+            vector_embedding_node_property: Property containing embeddings
+            vector_embedding_dimension: Dimension of embeddings
+            vector_distance_metric: Distance metric for similarity
+            vector_node_label: Label of document nodes
+            vector_search_type: Type of search to perform ('hybrid', 'vector', 'text')
+            graph_max_hops: Maximum number of hops for graph traversal
+            graph_max_nodes: Maximum number of nodes to retrieve
+            text_search_threshold: Similarity threshold for text search
+            vector_top_k: Number of top vector results to return
+            text_top_k: Number of top text results to return
         """
         self.neo4j_url = neo4j_url
         self.neo4j_username = neo4j_username
@@ -86,15 +94,19 @@ class GraphRAGRetriever:
         self.embedding_model = embedding_model
         
         # Vector retrieval parameters
-        self.vector_index_name = vector_index_name
         self.vector_text_node_property = vector_text_node_property
         self.vector_embedding_node_property = vector_embedding_node_property
+        self.vector_embedding_dimension = vector_embedding_dimension
+        self.vector_distance_metric = vector_distance_metric
+        self.vector_node_label = vector_node_label
+        self.vector_search_type = vector_search_type
         self.vector_top_k = vector_top_k
-        self.node_label = node_label
+        self.text_top_k = text_top_k
         
         # Graph retrieval parameters
+        self.graph_max_hops = graph_max_hops
         self.graph_max_nodes = graph_max_nodes
-        self.graph_max_depth = graph_max_depth
+        self.text_search_threshold = text_search_threshold
         
         # Initialize engines
         self.vector_engine = VectorRetrievalEngine(
@@ -103,17 +115,20 @@ class GraphRAGRetriever:
             password=neo4j_password,
             database=neo4j_database,
             embedding_model=embedding_model,
-            index_name=vector_index_name,
+            index_name="content_embeddings",
             text_node_property=vector_text_node_property,
             embedding_node_property=vector_embedding_node_property,
-            node_label=node_label if node_label else "Document",
+            embedding_dimension=vector_embedding_dimension,
+            distance_metric=vector_distance_metric,
+            node_label=vector_node_label,
+            search_type=vector_search_type
         )
         
         self.graph_engine = GraphRetrievalEngine(
             url=neo4j_url,
             username=neo4j_username,
             password=neo4j_password,
-            database=neo4j_database,
+            database=neo4j_database
         )
         
         # Initialize document processor for entity extraction
@@ -128,7 +143,7 @@ class GraphRAGRetriever:
         self.db_schema = self.graph_engine.get_db_schema()
         
         # Update the node label for vector search if not provided
-        if not self.node_label:
+        if not self.vector_node_label:
             self._discover_document_node_label()
     
     def _discover_document_node_label(self):
@@ -154,11 +169,11 @@ class GraphRAGRetriever:
                     
         # If we found potential document labels, use the first one
         if document_labels:
-            self.node_label = document_labels[0]
-            logger.info(f"Discovered document node label: {self.node_label}")
+            self.vector_node_label = document_labels[0]
+            logger.info(f"Discovered document node label: {self.vector_node_label}")
             
             # Update the vector engine node label
-            self.vector_engine.node_label = self.node_label
+            self.vector_engine.node_label = self.vector_node_label
     
     def add_documents(self, documents: List[Document], **kwargs):
         """Add documents to the vector store and extract entities for the graph.
@@ -208,7 +223,7 @@ class GraphRAGRetriever:
         try:
             logger.info(f"Performing vector search for query: {query}")
             vector_docs = self.vector_engine.similarity_search(
-                query, k=vector_k or self.vector_top_k
+                query, top_k=vector_k or self.vector_top_k
             )
             if vector_docs:
                 logger.info(f"Found {len(vector_docs)} documents via vector search")
@@ -275,7 +290,7 @@ class GraphRAGRetriever:
         try:
             logger.info(f"Performing vector search with scores for query: {query}")
             vector_results = self.vector_engine.similarity_search_with_score(
-                query, k=vector_k or self.vector_top_k
+                query, top_k=vector_k or self.vector_top_k
             )
             
             # Split documents and scores
@@ -339,4 +354,78 @@ class GraphRAGRetriever:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
-        self.close() 
+        self.close()
+
+    def get_relevant_documents(self, query: str) -> List[Document]:
+        """Get relevant documents using both vector and graph-based retrieval.
+        
+        Args:
+            query: Query string to search for
+            
+        Returns:
+            Combined list of relevant documents
+        """
+        vector_docs = []
+        graph_docs = []
+        
+        # Start with vector retrieval
+        logger.info(f"Performing vector search for query: {query}")
+        try:
+            # First initialize the vector store if needed
+            if not self.vector_engine.is_initialized():
+                self.vector_engine.init_vector_store()
+                
+            # Perform similarity search with fallback
+            vector_docs = self.vector_engine.similarity_search(query, top_k=self.vector_top_k)
+            
+            if vector_docs:
+                # Successfully retrieved vector docs
+                logger.info(f"Found {len(vector_docs)} documents via vector search")
+            else:
+                logger.warning("No documents found via vector search")
+        except Exception as e:
+            logger.warning(f"Error in vector retrieval: {e}")
+            # Continue execution to try graph retrieval
+        
+        # Then do graph-based retrieval using entity types discovered from database
+        logger.info(f"Using discovered entity types for graph retrieval: {self.entity_types[:3]}...")
+        logger.info(f"Performing graph retrieval for query: {query}")
+        
+        try:
+            graph_results = self.graph_engine.retrieve(
+                query=query,
+                max_nodes=self.graph_max_nodes,
+                max_depth=self.graph_max_depth,
+                entity_types=self.entity_types
+            )
+            
+            # Convert nodes to documents
+            graph_docs = [
+                Document(
+                    page_content=self._extract_content(node),
+                    metadata={
+                        "id": node.get('id', ''),
+                        "label": node.get('label', ''),
+                        "title": node.get('title', ''),
+                        "source": "graph"
+                    }
+                )
+                for node in graph_results.get('nodes', [])
+            ]
+            
+            # Format the relationships
+            self.graph_relationships = [
+                f"{rel['source_node'].get('title', 'Unknown')} --[{rel['type']}]--> {rel['target_node'].get('title', 'Unknown')}"
+                for rel in graph_results.get('relationships', [])
+            ]
+            
+            logger.info(f"Found {len(graph_docs)} entities and {len(self.graph_relationships)} relationships via graph search")
+            
+        except Exception as e:
+            logger.warning(f"Error in graph retrieval: {e}")
+            # Continue execution
+            
+        # Combine and deduplicate results
+        combined_docs = self._combine_and_deduplicate(vector_docs, graph_docs)
+        
+        return combined_docs 

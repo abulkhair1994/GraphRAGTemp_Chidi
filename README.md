@@ -4,16 +4,18 @@ A repository for Graph-based Retrieval Augmented Generation (GraphRAG) developme
 
 ## Description
 
-This repository contains code for implementing and testing Graph-based Retrieval Augmented Generation using LangGraph and Neo4j. The project follows the workflow described in the [Neo4j GraphRAG tutorial](https://neo4j.com/blog/developer/neo4j-graphrag-workflow-langchain-langgraph/).
+This repository contains code for implementing and testing Graph-based Retrieval Augmented Generation using LangChain and Neo4j. The project implements a knowledge graph-based retrieval system to enhance context for large language models.
 
 ## Overview
 
-GraphRAG is an extension of traditional RAG (Retrieval Augmented Generation) that leverages knowledge graphs to enhance the context and relationships between pieces of information. By using Neo4j as a graph database and LangGraph for orchestration, this project aims to create more context-aware and accurate responses from Large Language Models.
+GraphRAG is an extension of traditional RAG (Retrieval Augmented Generation) that leverages knowledge graphs to enhance the context and relationships between pieces of information. By using Neo4j as a graph database and LangChain for orchestration, this project aims to create more context-aware and accurate responses from Large Language Models.
 
 ## Key Components
 
-- **LangGraph**: For creating complex, stateful AI workflows
 - **Neo4j**: Graph database for storing and querying complex entity relationships
+- **LangChain**: Framework for developing LLM applications
+- **FastRP Embeddings**: For graph-based node embeddings
+- **Vector Retrieval**: For semantic search capabilities
 - **LLM Integration**: Connecting with advanced language models (Claude, GPT) for generation
 
 ## Workflow
@@ -32,14 +34,42 @@ GraphRAGTemp_Chidi/
 │
 ├─ config/                 # Configuration settings
 │   ├─ prompt_templates.yaml  # LLM prompt templates
-│   └─ model_config.yaml      # LLM model configurations
+│   ├─ model_config.yaml      # LLM model configurations
+│   └─ __init__.py            # Module initialization
 │
 ├─ src/                    # All production code
-│   ├─ llm/                # Language-model clients
-│   ├─ prompt_engineering/ # Prompt assembly helpers
+│   ├─ embeddings/         # Embedding generation and management
+│   │   ├─ __init__.py             # Module exports
+│   │   ├─ create_embeddings.py    # FastRP embedding creation
+│   │   ├─ create_openai_embeddings.py # OpenAI embedding creation
+│   │   └─ fix_embedding_mismatch.py  # Fix for dimension mismatch
+│   ├─ retrieval/          # Graph and vector retrieval components
+│   │   ├─ __init__.py           # Module exports
+│   │   ├─ graphrag_retriever.py # Combined vector and graph retrieval
+│   │   ├─ vector_retrieval.py   # Vector-based retrieval
+│   │   ├─ graph_retrieval.py    # Graph-based retrieval
+│   │   ├─ database_explorer.py  # Database schema exploration
+│   │   └─ document_processor.py # Document processing utilities
 │   ├─ utils/              # Shared utilities
-│   │   └─ env_manager.py  # Environment variable management
-│   └─ handlers/           # Error or event handlers
+│   │   ├─ __init__.py       # Module exports
+│   │   ├─ env_manager.py    # Environment variable management
+│   │   ├─ neo4j_utils.py    # Neo4j utility functions
+│   │   └─ setup_neo4j.py    # Neo4j database setup
+│   ├─ llm/                # Language-model clients (placeholder for future implementation)
+│   ├─ prompt_engineering/ # Prompt assembly helpers (placeholder for future implementation)
+│   └─ handlers/           # Error or event handlers (placeholder for future implementation)
+│
+├─ scripts/                # Executable entry points for tasks
+│   ├─ add_text_content.py # Add text properties to nodes
+│   ├─ env_example.py      # Environment setup example
+│   ├─ explore_database.py # Database exploration utilities
+│   ├─ fix_embeddings.py   # Fix embedding dimension mismatch
+│   ├─ neo4j_connection.py # Test Neo4j connectivity
+│   └─ run_neo4j_setup.py  # Setup Neo4j database
+│
+├─ examples/               # Example implementations
+│   ├─ graphrag_retrieval_example.py # Example of GraphRAG retrieval
+│   └─ env_example.py              # Environment setup example
 │
 ├─ data/                   # Persisted artefacts
 │   ├─ embeddings/         # Vector embeddings storage
@@ -47,11 +77,7 @@ GraphRAGTemp_Chidi/
 │   ├─ cache/              # Cache storage
 │   └─ prompts/            # Prompt templates
 │
-├─ examples/               # Short runnable demos
-│   ├─ neo4j_connection.py # Test Neo4j connectivity
-│   └─ env_example.py      # Environment setup example
-│
-└─ notebooks/              # Experiments & analysis
+└─ requirements.txt        # Project dependencies
 ```
 
 ## Configuration
@@ -66,10 +92,11 @@ Contains various prompt templates used by the system:
 
 Example usage:
 ```python
-from src.utils.config_loader import load_config
+import yaml
 
 # Load prompt templates
-prompt_templates = load_config("config/prompt_templates.yaml")
+with open("config/prompt_templates.yaml", "r") as f:
+    prompt_templates = yaml.safe_load(f)
 
 # Use a specific template
 system_prompt = prompt_templates["system"]["graph_expert"]
@@ -86,10 +113,11 @@ Contains settings for LLM providers:
 
 Example usage:
 ```python
-from src.utils.config_loader import load_config
+import yaml
 
 # Load model configuration
-model_config = load_config("config/model_config.yaml")
+with open("config/model_config.yaml", "r") as f:
+    model_config = yaml.safe_load(f)
 
 # Access configuration values
 default_model = model_config["anthropic"]["models"]["default"]
@@ -132,32 +160,92 @@ temperature = model_config["anthropic"]["temperature"]
 
 4. Test Neo4j connectivity:
    ```bash
-   python examples/neo4j_connection.py
+   python scripts/neo4j_connection.py
    ```
 
 ## Usage Examples
 
 - **Testing Neo4j Connection**: 
   ```bash
-  python examples/neo4j_connection.py
+  python scripts/neo4j_connection.py
   ```
-  This example tests your connection to Neo4j using credentials from your `.env` file.
+  This script tests your connection to Neo4j using credentials from your `.env` file.
 
-- **Environment Variables Example**:
+- **Fix Embedding Dimension Mismatch**:
   ```bash
-  python examples/env_example.py
+  python scripts/fix_embeddings.py
   ```
-  This shows how to properly access environment variables in your code.
+  This script resolves dimension mismatches between OpenAI embeddings (1536) and fastRP embeddings (512).
+
+- **Add Text Content to Nodes**:
+  ```bash
+  python scripts/add_text_content.py
+  ```
+  This script adds a text_content property to nodes for text-based retrieval fallback.
+
+- **Explore Database Structure**:
+  ```bash
+  python scripts/explore_database.py
+  ```
+  This script explores the Neo4j database schema to understand available node labels and relationship types.
+
+- **Run GraphRAG Retrieval Example**:
+  ```bash
+  python examples/graphrag_retrieval_example.py
+  ```
+  This example demonstrates the GraphRAG retrieval functionality combining vector and graph-based approaches.
+
+## Core Components
+
+### GraphRAG Retriever
+
+The core of this project is the `GraphRAGRetriever` class which combines:
+
+1. **Vector Retrieval**: Using embeddings to find semantically similar content
+2. **Graph Retrieval**: Using graph relationships to find contextually relevant information
+3. **Hybrid Approach**: Combining both approaches for improved context and accuracy
+
+Example usage:
+```python
+from src.retrieval import GraphRAGRetriever
+from src.utils.env_manager import load_env_vars, EnvManager
+from langchain_openai import OpenAIEmbeddings
+
+# Load environment variables
+load_env_vars()
+neo4j_creds = EnvManager.get_neo4j_credentials()
+
+# Initialize embeddings
+embeddings = OpenAIEmbeddings()
+
+# Create GraphRAG retriever
+retriever = GraphRAGRetriever(
+    neo4j_url=neo4j_creds["uri"],
+    neo4j_username=neo4j_creds["username"],
+    neo4j_password=neo4j_creds["password"],
+    neo4j_database=neo4j_creds["database"],
+    embedding_model=embeddings
+)
+
+# Retrieve information
+result = retriever.retrieve("What is GraphRAG?")
+```
 
 ## Dependencies
 
 - Python 3.9+
-- LangGraph (v0.0.15+)
 - Neo4j (v5.14.0+)
 - LangChain (v0.0.267+)
 - python-dotenv (v1.0.0+)
 - LangChain OpenAI/Anthropic integrations
 - Other dependencies listed in requirements.txt
+
+## Future Improvements
+
+- Implementation of LLM client modules in the `src/llm/` directory
+- Development of prompt engineering utilities in the `src/prompt_engineering/` directory
+- Addition of error and event handlers in the `src/handlers/` directory
+- Integration with LangGraph for more complex, stateful AI workflows
 
 ## License
 
