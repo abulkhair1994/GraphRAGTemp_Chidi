@@ -42,6 +42,7 @@ GraphRAGTemp_Chidi/
 │   │   ├─ __init__.py             # Module exports
 │   │   ├─ create_embeddings.py    # FastRP embedding creation
 │   │   ├─ create_openai_embeddings.py # OpenAI embedding creation
+│   │   ├─ create_comprehensive_vector_index.py # Comprehensive vector index setup
 │   │   └─ fix_embedding_mismatch.py  # Fix for dimension mismatch
 │   ├─ retrieval/          # Graph and vector retrieval components
 │   │   ├─ __init__.py           # Module exports
@@ -65,7 +66,8 @@ GraphRAGTemp_Chidi/
 │   ├─ explore_database.py # Database exploration utilities
 │   ├─ fix_embeddings.py   # Fix embedding dimension mismatch
 │   ├─ neo4j_connection.py # Test Neo4j connectivity
-│   └─ run_neo4j_setup.py  # Setup Neo4j database
+│   ├─ run_neo4j_setup.py  # Setup Neo4j database
+│   └─ setup_vector_indexes.py # Setup comprehensive vector indexes
 │
 ├─ examples/               # Example implementations
 │   ├─ graphrag_retrieval_example.py # Example of GraphRAG retrieval
@@ -188,6 +190,12 @@ temperature = model_config["anthropic"]["temperature"]
   python scripts/explore_database.py
   ```
   This script explores the Neo4j database schema to understand available node labels and relationship types.
+
+- **Setup Comprehensive Vector Indexes**:
+  ```bash
+  python scripts/setup_vector_indexes.py
+  ```
+  This script creates comprehensive vector indexes for all educational content types (Problem, Exercise, Solution, Example, Para) to enable robust content retrieval.
 
 - **Run GraphRAG Retrieval Example**:
   ```bash

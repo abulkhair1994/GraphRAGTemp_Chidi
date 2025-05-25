@@ -310,6 +310,274 @@ class DatabaseExplorer:
             
         return analysis
 
+    def analyze_educational_metadata(self) -> Dict[str, Any]:
+        """Analyze educational metadata including courses, chapters, and learning units.
+        
+        This method extracts information specifically relevant to educational content
+        such as course names, subjects, chapters, and their hierarchical organization.
+        
+        Returns:
+            Dictionary containing educational content analysis
+        """
+        driver = self.connect()
+        analysis = {}
+        
+        try:
+            with driver.session(database=self.database) as session:
+                # Check if Course nodes exist
+                course_count_query = """
+                MATCH (c:Course)
+                RETURN count(c) as course_count
+                """
+                result = session.run(course_count_query)
+                course_count = result.single()["course_count"] if result.peek() else 0
+                analysis["course_count"] = course_count
+                
+                # Get educational content types and counts
+                content_types_query = """
+                MATCH (n) 
+                WHERE ANY(label IN labels(n) WHERE label IN [
+                    'Chapter', 'Section', 'Exercise', 'Problem', 'Solution', 
+                    'Example', 'Practice', 'Content', 'Module'
+                ])
+                WITH labels(n)[0] as content_type, count(n) as count
+                RETURN content_type, count
+                ORDER BY count DESC
+                """
+                result = session.run(content_types_query)
+                content_types = [{"type": record["content_type"], "count": record["count"]} for record in result]
+                analysis["content_types"] = content_types
+                
+                # Analyze learning objectives
+                learning_objectives_query = """
+                MATCH (n)
+                WHERE n.learning_objective IS NOT NULL
+                WITH n.learning_objective as objective, count(n) as count, collect(labels(n)[0])[0] as node_type
+                RETURN objective, count, node_type
+                ORDER BY count DESC
+                LIMIT 20
+                """
+                result = session.run(learning_objectives_query)
+                learning_objectives = [
+                    {
+                        "objective": record["objective"],
+                        "count": record["count"],
+                        "node_type": record["node_type"]
+                    }
+                    for record in result
+                ]
+                analysis["learning_objectives"] = learning_objectives
+                
+                # Get topic distribution
+                topics_query = """
+                MATCH (n)
+                WHERE n.topic IS NOT NULL
+                WITH n.topic as topic, count(n) as count, collect(labels(n)[0])[0] as node_type
+                RETURN topic, count, node_type
+                ORDER BY count DESC
+                LIMIT 20
+                """
+                result = session.run(topics_query)
+                topics = [
+                    {
+                        "topic": record["topic"],
+                        "count": record["count"],
+                        "node_type": record["node_type"]
+                    }
+                    for record in result
+                ]
+                analysis["topics"] = topics
+                
+                # Get difficulty distribution
+                difficulty_query = """
+                MATCH (n)
+                WHERE n.difficulty IS NOT NULL
+                WITH n.difficulty as difficulty, count(n) as count, collect(labels(n)[0])[0] as node_type
+                RETURN difficulty, count, node_type
+                ORDER BY count DESC
+                """
+                result = session.run(difficulty_query)
+                difficulties = [
+                    {
+                        "difficulty": record["difficulty"],
+                        "count": record["count"],
+                        "node_type": record["node_type"]
+                    }
+                    for record in result
+                ]
+                analysis["difficulties"] = difficulties
+                
+                if course_count > 0:
+                    # Get course metadata properties
+                    course_props_query = """
+                    MATCH (c:Course)
+                    WITH c LIMIT 1
+                    RETURN keys(c) as course_properties
+                    """
+                    result = session.run(course_props_query)
+                    course_properties = result.single()["course_properties"] if result.peek() else []
+                    analysis["course_properties"] = course_properties
+                    
+                    # Get all courses with key metadata
+                    courses_query = """
+                    MATCH (c:Course)
+                    RETURN 
+                      c.name as name,
+                      c.title as title,
+                      c.subject as subject,
+                      c.description as description,
+                      id(c) as id
+                    ORDER BY c.name
+                    """
+                    result = session.run(courses_query)
+                    courses = [dict(record) for record in result]
+                    analysis["courses"] = courses
+                    
+                    # Get course structure - chapters per course
+                    course_structure_query = """
+                    MATCH (c:Course)-[:CONTAINS]->(ch:Chapter)
+                    WITH c.name as course_name, count(ch) as chapter_count
+                    RETURN course_name, chapter_count
+                    ORDER BY chapter_count DESC
+                    """
+                    result = session.run(course_structure_query)
+                    course_structure = [dict(record) for record in result]
+                    analysis["course_structure"] = course_structure
+                    
+                    # Get educational hierarchy
+                    hierarchy_query = """
+                    MATCH path = (c:Course)-[:CONTAINS*]->(n)
+                    WITH c.name as course_name, labels(n)[0] as node_type, count(n) as count
+                    RETURN course_name, node_type, count
+                    ORDER BY course_name, count DESC
+                    """
+                    result = session.run(hierarchy_query)
+                    hierarchy = [dict(record) for record in result]
+                    analysis["educational_hierarchy"] = hierarchy
+                    
+                    # Check for metadata properties across educational content
+                    metadata_query = """
+                    MATCH (n)
+                    WHERE any(label in labels(n) WHERE label IN ['Course', 'Chapter', 'Section', 'Exercise', 'Problem', 'Solution'])
+                    WITH labels(n)[0] as node_type,
+                         count(*) as node_count,
+                         sum(CASE WHEN n.subject IS NOT NULL THEN 1 ELSE 0 END) as has_subject,
+                         sum(CASE WHEN n.course_name IS NOT NULL THEN 1 ELSE 0 END) as has_course_name,
+                         sum(CASE WHEN n.difficulty IS NOT NULL THEN 1 ELSE 0 END) as has_difficulty,
+                         sum(CASE WHEN n.learning_objective IS NOT NULL THEN 1 ELSE 0 END) as has_learning_objective,
+                         sum(CASE WHEN n.topic IS NOT NULL THEN 1 ELSE 0 END) as has_topic
+                    RETURN node_type, node_count, has_subject, has_course_name, has_difficulty, has_learning_objective, has_topic
+                    ORDER BY node_count DESC
+                    """
+                    result = session.run(metadata_query)
+                    metadata_analysis = [dict(record) for record in result]
+                    analysis["educational_metadata"] = metadata_analysis
+                    
+                    # Get course topics if they exist
+                    topics_query = """
+                    MATCH (c:Course)
+                    WHERE c.topic IS NOT NULL OR c.topics IS NOT NULL OR c.subject IS NOT NULL
+                    RETURN 
+                      c.name as course_name,
+                      c.topic as topic,
+                      c.topics as topics,
+                      c.subject as subject
+                    """
+                    result = session.run(topics_query)
+                    topics = [dict(record) for record in result]
+                    analysis["course_topics"] = topics
+                else:
+                    # Look for hierarchical structure even without Course nodes
+                    hierarchy_query = """
+                    MATCH (root)-[:CONTAINS*]->(leaf)
+                    WHERE NOT ()-[:CONTAINS]->(root)
+                    WITH root, labels(root)[0] as root_type, leaf, labels(leaf)[0] as leaf_type
+                    RETURN DISTINCT root_type, leaf_type, 
+                           count(*) as path_count,
+                           collect(DISTINCT root.name)[0] as sample_root_name
+                    ORDER BY path_count DESC
+                    """
+                    result = session.run(hierarchy_query)
+                    hierarchy = []
+                    for record in result:
+                        hierarchy.append({
+                            "root_type": record["root_type"],
+                            "leaf_type": record["leaf_type"],
+                            "path_count": record["path_count"],
+                            "sample_root_name": record["sample_root_name"]
+                        })
+                    analysis["hierarchy"] = hierarchy
+                    
+                    # Analyze concept relationships
+                    concept_query = """
+                    MATCH (a)-[r:RELATED_TO|PREREQUISITE_FOR|REFERENCES]->(b)
+                    WITH type(r) as relationship_type, count(r) as count,
+                         labels(a)[0] as source_type, labels(b)[0] as target_type
+                    RETURN relationship_type, count, source_type, target_type
+                    ORDER BY count DESC
+                    """
+                    result = session.run(concept_query)
+                    concept_relationships = []
+                    for record in result:
+                        concept_relationships.append({
+                            "relationship_type": record["relationship_type"],
+                            "count": record["count"],
+                            "source_type": record["source_type"],
+                            "target_type": record["target_type"]
+                        })
+                    analysis["concept_relationships"] = concept_relationships
+                
+                # Analyze educational content structure
+                structure_query = """
+                MATCH (n)
+                WHERE ANY(label IN labels(n) WHERE label IN [
+                    'Chapter', 'Section', 'Exercise', 'Problem', 'Solution', 
+                    'Example', 'Practice', 'Content', 'Module'
+                ])
+                OPTIONAL MATCH (n)-[:CONTAINS]->(child)
+                WITH n, labels(n)[0] as node_type, count(child) as children_count
+                RETURN node_type, 
+                       count(n) as node_count,
+                       sum(children_count) as total_children,
+                       avg(children_count) as avg_children_per_node
+                ORDER BY node_count DESC
+                """
+                result = session.run(structure_query)
+                structure = []
+                for record in result:
+                    structure.append({
+                        "node_type": record["node_type"],
+                        "node_count": record["node_count"],
+                        "total_children": record["total_children"],
+                        "avg_children_per_node": record["avg_children_per_node"]
+                    })
+                analysis["structure"] = structure
+                
+                # Analyze popular reference patterns
+                reference_query = """
+                MATCH (a)-[r:REFERENCES]->(b)
+                WITH labels(a)[0] as source_type, labels(b)[0] as target_type, count(r) as ref_count
+                RETURN source_type, target_type, ref_count
+                ORDER BY ref_count DESC
+                LIMIT 10
+                """
+                result = session.run(reference_query)
+                references = []
+                for record in result:
+                    references.append({
+                        "source_type": record["source_type"],
+                        "target_type": record["target_type"],
+                        "ref_count": record["ref_count"]
+                    })
+                analysis["references"] = references
+                
+        except Exception as e:
+            print(f"Error analyzing educational metadata: {e}")
+        finally:
+            driver.close()
+            
+        return analysis
+
     def explore_database(self, print_output: bool = True) -> Dict[str, Any]:
         """Explore the complete database and return findings.
         
@@ -482,6 +750,20 @@ class DatabaseExplorer:
                 for record in hierarchy_analysis["parent_child_patterns"]
             ]
             print(tabulate(table_data, headers=headers, tablefmt="simple"))
+
+        # Analyze educational metadata
+        educational_metadata = self.analyze_educational_metadata()
+        results["educational_metadata"] = educational_metadata
+        
+        if print_output:
+            print("\n📚 EDUCATIONAL METADATA:")
+            for key, value in educational_metadata.items():
+                if isinstance(value, list):
+                    print(f"\n{key}:")
+                    for item in value:
+                        print(f"  - {item}")
+                else:
+                    print(f"\n{key}: {value}")
 
         return results
 
@@ -688,6 +970,130 @@ class DatabaseExplorer:
         finally:
             driver.close()
 
+    def get_chapter_information(self) -> Dict[str, Any]:
+        """Get detailed information about chapters in the database.
+        
+        Returns:
+            Dictionary containing chapter information including numbers, titles, and content counts
+        """
+        driver = self.connect()
+        chapter_info = {
+            "chapters": [],
+            "total_chapters": 0,
+            "chapter_numbers": [],
+            "content_by_chapter": {}
+        }
+        
+        try:
+            with driver.session(database=self.database) as session:
+                # Get all chapters with their numbers and titles
+                result = session.run("""
+                MATCH (c:Chapter)
+                RETURN c.Number as chapter_number, 
+                       c.title as title,
+                       c.name as name,
+                       c.chapter_number as alt_chapter_number,
+                       id(c) as node_id
+                ORDER BY COALESCE(c.Number, c.chapter_number, 0)
+                """)
+                
+                chapters = []
+                for record in result:
+                    chapter_num = record['chapter_number'] or record['alt_chapter_number']
+                    title = record['title'] or record['name'] or 'No title'
+                    node_id = record['node_id']
+                    
+                    chapter_data = {
+                        "number": chapter_num,
+                        "title": title,
+                        "node_id": node_id
+                    }
+                    chapters.append(chapter_data)
+                
+                chapter_info["chapters"] = chapters
+                chapter_info["total_chapters"] = len(chapters)
+                chapter_info["chapter_numbers"] = [ch["number"] for ch in chapters if ch["number"] is not None]
+                
+                # Get content count by chapter
+                for chapter in chapters:
+                    if chapter["number"] is not None:
+                        content_result = session.run("""
+                        MATCH (n)
+                        WHERE (n:Problem OR n:Exercise OR n:Solution OR n:Example OR n:Content)
+                        AND n.chapter_number = $chapter_num
+                        WITH labels(n)[0] as content_type, count(n) as count
+                        RETURN content_type, count
+                        ORDER BY count DESC
+                        """, chapter_num=chapter["number"])
+                        
+                        content_counts = {}
+                        total_content = 0
+                        for content_record in content_result:
+                            content_type = content_record["content_type"]
+                            count = content_record["count"]
+                            content_counts[content_type] = count
+                            total_content += count
+                        
+                        chapter_info["content_by_chapter"][chapter["number"]] = {
+                            "title": chapter["title"],
+                            "content_types": content_counts,
+                            "total_content": total_content
+                        }
+                
+        except Exception as e:
+            chapter_info["error"] = str(e)
+        finally:
+            driver.close()
+            
+        return chapter_info
+    
+    def print_chapter_information(self, chapter_info=None):
+        """Print formatted chapter information.
+        
+        Args:
+            chapter_info: Results from get_chapter_information (if None, will run the query)
+        """
+        if chapter_info is None:
+            chapter_info = self.get_chapter_information()
+            
+        print("\n📚 CHAPTER INFORMATION:")
+        print("=" * 50)
+        
+        if "error" in chapter_info:
+            print(f"❌ Error retrieving chapter information: {chapter_info['error']}")
+            return
+            
+        if not chapter_info["chapters"]:
+            print("⚠️ No chapters found in the database")
+            return
+            
+        # Print basic chapter info
+        for chapter in chapter_info["chapters"]:
+            chapter_num = chapter["number"]
+            title = chapter["title"]
+            print(f"Chapter {chapter_num}: {title}")
+        
+        print(f"\nTotal Chapters Found: {chapter_info['total_chapters']}")
+        print(f"Chapter Numbers Available: {chapter_info['chapter_numbers']}")
+        
+        # Print content distribution by chapter
+        if chapter_info["content_by_chapter"]:
+            print(f"\n📊 CONTENT BY CHAPTER:")
+            print("-" * 30)
+            
+            for chapter_num in sorted(chapter_info["chapter_numbers"]):
+                if chapter_num in chapter_info["content_by_chapter"]:
+                    chapter_data = chapter_info["content_by_chapter"][chapter_num]
+                    title = chapter_data["title"]
+                    total = chapter_data["total_content"]
+                    
+                    print(f"\nChapter {chapter_num}: {title}")
+                    print(f"  Total Content: {total:,} items")
+                    
+                    if chapter_data["content_types"]:
+                        for content_type, count in chapter_data["content_types"].items():
+                            print(f"    • {content_type}: {count:,}")
+
     def check_fastrp_embeddings(self, auto_fix=True):
         """Check for fastRP_embedding properties and automatically fix embedding issues.
         
@@ -870,10 +1276,101 @@ if __name__ == "__main__":
     print("\n🔍 Exploring your Neo4j database...")
     results = explorer.explore_database(print_output=True)
     
+    # Print specific educational metadata analysis in a readable format
+    print("\n📚 EDUCATIONAL CONTENT STRUCTURE:")
+    edu_metadata = explorer.analyze_educational_metadata()
+    
+    # Show content types
+    if "content_types" in edu_metadata and edu_metadata["content_types"]:
+        print(f"\n  Content Types ({len(edu_metadata['content_types'])}):")
+        content_table = []
+        headers = ["Type", "Count"]
+        for content_type in edu_metadata["content_types"]:
+            content_table.append([
+                content_type.get("type", "N/A"),
+                content_type.get("count", 0)
+            ])
+        print(tabulate(content_table, headers=headers, tablefmt="simple"))
+    
+    # Show learning objectives
+    if "learning_objectives" in edu_metadata and edu_metadata["learning_objectives"]:
+        print(f"\n  Learning Objectives (Top {len(edu_metadata['learning_objectives'])}):")
+        objectives_table = []
+        headers = ["Objective", "Count", "Node Type"]
+        for objective in edu_metadata["learning_objectives"]:
+            # Truncate long objectives
+            obj_text = objective.get("objective", "N/A")
+            if len(obj_text) > 50:
+                obj_text = obj_text[:47] + "..."
+                
+            objectives_table.append([
+                obj_text,
+                objective.get("count", 0),
+                objective.get("node_type", "N/A")
+            ])
+        print(tabulate(objectives_table, headers=headers, tablefmt="simple"))
+    
+    # Show topics
+    if "topics" in edu_metadata and edu_metadata["topics"]:
+        print(f"\n  Topics (Top {len(edu_metadata['topics'])}):")
+        topics_table = []
+        headers = ["Topic", "Count", "Node Type"]
+        for topic in edu_metadata["topics"]:
+            topics_table.append([
+                topic.get("topic", "N/A"),
+                topic.get("count", 0),
+                topic.get("node_type", "N/A")
+            ])
+        print(tabulate(topics_table, headers=headers, tablefmt="simple"))
+    
+    # Show difficulties
+    if "difficulties" in edu_metadata and edu_metadata["difficulties"]:
+        print(f"\n  Difficulty Levels ({len(edu_metadata['difficulties'])}):")
+        difficulty_table = []
+        headers = ["Difficulty", "Count", "Node Type"]
+        for difficulty in edu_metadata["difficulties"]:
+            difficulty_table.append([
+                difficulty.get("difficulty", "N/A"),
+                difficulty.get("count", 0),
+                difficulty.get("node_type", "N/A")
+            ])
+        print(tabulate(difficulty_table, headers=headers, tablefmt="simple"))
+    
+    # Show content structure
+    if "structure" in edu_metadata and edu_metadata["structure"]:
+        print(f"\n  Content Structure ({len(edu_metadata['structure'])}):")
+        structure_table = []
+        headers = ["Node Type", "Count", "Total Children", "Avg Children/Node"]
+        for structure in edu_metadata["structure"]:
+            structure_table.append([
+                structure.get("node_type", "N/A"),
+                structure.get("node_count", 0),
+                structure.get("total_children", 0),
+                f"{structure.get('avg_children_per_node', 0):.2f}"
+            ])
+        print(tabulate(structure_table, headers=headers, tablefmt="simple"))
+    
+    # Show concept relationships
+    if "concept_relationships" in edu_metadata and edu_metadata["concept_relationships"]:
+        print(f"\n  Concept Relationships (Top {len(edu_metadata['concept_relationships'])}):")
+        relationships_table = []
+        headers = ["Relationship", "Source", "Target", "Count"]
+        for rel in edu_metadata["concept_relationships"]:
+            relationships_table.append([
+                rel.get("relationship_type", "N/A"),
+                rel.get("source_type", "N/A"),
+                rel.get("target_type", "N/A"),
+                rel.get("count", 0)
+            ])
+        print(tabulate(relationships_table, headers=headers, tablefmt="simple"))
+    
     print("\n🔍 Checking embedding properties...")
     explorer.print_embedding_properties()
     
     print("\n🔍 Checking and fixing fastRP embeddings...")
     explorer.check_fastrp_embeddings(auto_fix=True)
+    
+    print("\n📚 Getting chapter information...")
+    explorer.print_chapter_information()
     
     print("\n✅ Database exploration complete!") 

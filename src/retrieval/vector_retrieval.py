@@ -7,7 +7,8 @@ based on semantic similarity.
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
+import re
 
 from langchain.embeddings.base import Embeddings
 from langchain_community.vectorstores import Neo4jVector
@@ -27,12 +28,12 @@ class VectorRetrievalEngine:
         password: str,
         database: str = "neo4j",
         embedding_model: Optional[Embeddings] = None,
-        index_name: str = "content_embeddings",
+        index_name: str = "educational_problem_embeddings",
         text_node_property: str = "text_content",
         embedding_node_property: str = "fastRP_embedding",
         embedding_dimension: int = 512,
         distance_metric: str = "cosine",
-        node_label: str = "Content",
+        node_label: str = "Problem",
         search_type: str = "hybrid"
     ):
         """Initialize the Vector Retrieval Engine.
@@ -257,79 +258,117 @@ class VectorRetrievalEngine:
         return self.vector_store.add_documents(documents, **kwargs)
     
     def similarity_search(self, query: str, top_k: int = 5) -> List[Document]:
-        """Perform similarity search for a query.
+        """Perform similarity search for a query across all educational content types.
         
         Args:
             query: Query string
             top_k: Number of results to return
             
         Returns:
-            List of relevant documents
+            List of relevant documents from all educational content types
         """
         try:
-            # Get content-bearing node labels
-            content_labels = self.get_content_bearing_nodes()
-            if not content_labels:
-                logger.warning("No content-bearing nodes found")
-                return []
-            
             # Get query embedding
             query_embedding = self._get_query_embedding(query)
             
-            # Check vector dimensions
-            dim_info = self._check_vector_dimensions()
-            if not dim_info["compatible"]:
-                logger.warning(f"Dimension mismatch: {dim_info['message']}")
-                return self._custom_text_search(query, top_k)
+            # Define all educational indexes
+            educational_indexes = [
+                ("educational_problem_embeddings", "Problem"),
+                ("educational_exercise_embeddings", "Exercise"),
+                ("educational_solution_embeddings", "Solution"),
+                ("educational_example_embeddings", "Example"),
+                ("educational_para_embeddings", "Para")
+            ]
             
-            # Build label list for Cypher
-            labels_list = "[" + ", ".join([f"'{label}'" for label in content_labels]) + "]"
+            all_results = []
             
-            # Perform vector search across all content-bearing nodes
+            # Query each educational index
             with self.driver.session(database=self.database) as session:
-                search_query = f"""
-                CALL db.index.vector.queryNodes(
-                    '{self.index_name}',
-                    {top_k},
-                    $embedding
-                ) YIELD node, score
-                WHERE any(label in labels(node) WHERE label IN {labels_list})
-                AND node.{self.text_node_property} IS NOT NULL
-                AND node.{self.text_node_property} <> ''
-                AND NOT node.{self.text_node_property} =~ '.*[0-9]+.*'
-                RETURN node, score
-                ORDER BY score DESC
-                LIMIT {top_k}
-                """
-                
-                result = session.run(search_query, embedding=query_embedding)
-                
-                docs = []
-                for record in result:
-                    node = record["node"]
-                    score = record["score"]
-                    
-                    # Get the text content
-                    text = node.get(self.text_node_property, "")
-                    if not text:
+                for index_name, content_type in educational_indexes:
+                    try:
+                        # Query this specific index
+                        search_query = f"""
+                        CALL db.index.vector.queryNodes(
+                            '{index_name}',
+                            $top_k_per_type,
+                            $embedding
+                        ) YIELD node, score
+                        WHERE node.{self.text_node_property} IS NOT NULL
+                        AND node.{self.text_node_property} <> ''
+                        AND size(node.{self.text_node_property}) > 20
+                        WITH node, score,
+                             labels(node)[0] as primary_label,
+                             CASE 
+                                WHEN node.title IS NOT NULL AND node.title <> '' THEN node.title
+                                WHEN node.id IS NOT NULL THEN 'Chapter ' + toString(node.chapter_number) + ' - ' + node.id
+                                ELSE 'Chapter ' + toString(node.chapter_number) + ' Content'
+                             END as content_title
+                        RETURN node.{self.text_node_property} as content,
+                               node.id as node_id,
+                               primary_label as content_type,
+                               content_title as title,
+                               node.module_id as module_id,
+                               node.chapter_number as chapter_number,
+                               null as section_number,
+                               node.semantic_keywords as keywords,
+                               score,
+                               'vector_search' as search_strategy,
+                               properties(node) as all_properties
+                        ORDER BY score DESC
+                        """
+                        
+                        # Get results for this content type (limit per type to ensure diversity)
+                        results_per_type = max(1, top_k // len(educational_indexes))
+                        
+                        result = session.run(
+                            search_query,
+                            embedding=query_embedding,
+                            top_k_per_type=results_per_type
+                        )
+                        
+                        # Process results for this content type
+                        for record in result:
+                            try:
+                                # Extract metadata with proper defaults
+                                metadata = {
+                                    'node_id': record.get('node_id', 'unknown'),
+                                    'type': record.get('content_type', content_type),
+                                    'title': record.get('title', f'{content_type} Content'),
+                                    'module_id': record.get('module_id', 'Unknown'),
+                                    'chapter_number': record.get('chapter_number', 'N/A'),
+                                    'section_number': record.get('section_number', 'N/A'),
+                                    'keywords': record.get('keywords', []),
+                                    'score': float(record.get('score', 0.0)),
+                                    'search_strategy': record.get('search_strategy', 'vector_search'),
+                                    'source_index': index_name
+                                }
+                                
+                                # Create document
+                                doc = Document(
+                                    page_content=record.get('content', ''),
+                                    metadata=metadata
+                                )
+                                all_results.append(doc)
+                                
+                            except Exception as e:
+                                logger.warning(f"Error processing result from {index_name}: {e}")
+                                continue
+                                
+                    except Exception as e:
+                        logger.warning(f"Error querying index {index_name}: {e}")
                         continue
-                    
-                    # Create document with metadata
-                    doc = Document(
-                        page_content=text,
-                        metadata={
-                            "score": score,
-                            "node_id": node.id,
-                            "labels": list(node.labels),
-                            **{k: v for k, v in node.items() if k != self.text_node_property}
-                        }
-                    )
-                    docs.append(doc)
-                
-                return docs
-                
+            
+            # Sort all results by score and return top_k
+            all_results.sort(key=lambda x: x.metadata.get('score', 0.0), reverse=True)
+            final_results = all_results[:top_k]
+            
+            logger.info(f"Vector search returned {len(final_results)} results from {len(set(r.metadata.get('type') for r in final_results))} content types")
+            
+            return final_results
+            
         except Exception as e:
-            logger.error(f"Error in similarity search: {e}")
+            logger.error(f"Vector similarity search failed: {e}")
+            # Fallback to text search
             return self._custom_text_search(query, top_k)
     
     def _check_vector_dimensions(self) -> Dict[str, Any]:
@@ -376,50 +415,69 @@ class VectorRetrievalEngine:
                 logger.warning("No content-bearing nodes found")
                 return []
             
-            # Build label list for Cypher
-            labels_list = "[" + ", ".join([f"'{label}'" for label in content_labels]) + "]"
-            
             # Split query into words for better matching
             query_words = query.lower().split()
             
             with self.driver.session(database=self.database) as session:
-                # Search for nodes containing query words
+                # Enhanced text search with proper metadata extraction
                 search_query = f"""
                 MATCH (n)
-                WHERE any(label in labels(n) WHERE label IN {labels_list})
+                WHERE any(label in labels(n) WHERE label IN ['Problem', 'Exercise', 'Solution', 'Example', 'Para'])
                 AND n.{self.text_node_property} IS NOT NULL
                 AND n.{self.text_node_property} <> ''
-                AND NOT n.{self.text_node_property} =~ '.*[0-9]+.*'
+                AND size(n.{self.text_node_property}) > 20
                 AND any(word IN split(toLower(n.{self.text_node_property}), ' ') 
                        WHERE any(q IN $query_words WHERE word CONTAINS q))
-                RETURN n, 
-                       size([word IN split(toLower(n.{self.text_node_property}), ' ') 
-                            WHERE any(q IN $query_words WHERE word CONTAINS q)]) as match_count
-                ORDER BY match_count DESC
-                LIMIT {top_k}
+                WITH n,
+                     labels(n)[0] as primary_label,
+                     CASE 
+                        WHEN n.title IS NOT NULL AND n.title <> '' THEN n.title
+                        WHEN n.id IS NOT NULL THEN primary_label + ' - ' + n.id
+                        ELSE primary_label + ' Content'
+                     END as content_title,
+                     COALESCE(n.chapter_number, 'N/A') as chapter_num,
+                     COALESCE(n.module_id, 'Unknown') as mod_id,
+                     size([word IN split(toLower(n.{self.text_node_property}), ' ') 
+                          WHERE any(q IN $query_words WHERE word CONTAINS q)]) as match_count
+                RETURN n.{self.text_node_property} as content,
+                       n.id as node_id,
+                       primary_label as content_type,
+                       content_title as title,
+                       chapter_num as chapter_number,
+                       mod_id as module_id,
+                       match_count,
+                       n.semantic_keywords as keywords,
+                       properties(n) as all_properties
+                ORDER BY match_count DESC, size(n.{self.text_node_property}) DESC
+                LIMIT $top_k
                 """
                 
-                result = session.run(search_query, query_words=query_words)
+                result = session.run(search_query, query_words=query_words, top_k=top_k)
                 
                 docs = []
                 for record in result:
-                    node = record["n"]
-                    match_count = record["match_count"]
+                    # Get all properties and filter out text_content
+                    all_props = record["all_properties"] or {}
+                    filtered_props = {k: v for k, v in all_props.items() 
+                                    if k != self.text_node_property and v is not None}
                     
-                    # Get the text content
-                    text = node.get(self.text_node_property, "")
-                    if not text:
-                        continue
+                    # Create comprehensive metadata
+                    metadata = {
+                        "id": record["node_id"],
+                        "type": record["content_type"],
+                        "title": record["title"],
+                        "chapter_number": record["chapter_number"],
+                        "module_id": record["module_id"],
+                        "match_count": record["match_count"],
+                        "semantic_keywords": record.get("keywords"),
+                        "search_strategy": "text_search",
+                        **filtered_props  # Include all other node properties
+                    }
                     
-                    # Create document with metadata
+                    # Create document
                     doc = Document(
-                        page_content=text,
-                        metadata={
-                            "match_count": match_count,
-                            "node_id": node.id,
-                            "labels": list(node.labels),
-                            **{k: v for k, v in node.items() if k != self.text_node_property}
-                        }
+                        page_content=record["content"],
+                        metadata=metadata
                     )
                     docs.append(doc)
                 
@@ -449,7 +507,19 @@ class VectorRetrievalEngine:
             return []
         
         try:
-            return self.vector_store.similarity_search_with_score(query, k=top_k, **kwargs)
+            # Get base documents from similarity search
+            docs = self.similarity_search(query, top_k=top_k)
+            
+            # Compute quality scores
+            docs_with_scores = []
+            for doc in docs:
+                quality_score = self._compute_quality_score(doc, query)
+                docs_with_scores.append((doc, quality_score))
+                
+            # Sort by quality score
+            docs_with_scores.sort(key=lambda x: x[1], reverse=True)
+            return docs_with_scores
+                
         except Exception as e:
             logger.error(f"Error in similarity search with score: {e}")
             return []
@@ -587,4 +657,65 @@ class VectorRetrievalEngine:
                 return list(set(content_labels))  # Remove duplicates
         except Exception as e:
             logger.error(f"Error getting content-bearing nodes: {e}")
-            return [] 
+            return []
+
+    def _compute_quality_score(self, doc: Document, query: str) -> float:
+        """Compute a meaningful quality score for a document.
+        
+        The score is based on multiple factors:
+        1. Content completeness (0-0.3)
+        2. Relevance to query (0-0.4) 
+        3. Content type appropriateness (0-0.3)
+        
+        Args:
+            doc: Document to score
+            query: Original query string
+            
+        Returns:
+            Quality score between 0 and 1
+        """
+        score = 0.0
+        
+        # 1. Content completeness (0-0.3)
+        content = doc.page_content
+        word_count = len(content.split())
+        if word_count > 200:
+            score += 0.3
+        elif word_count > 100:
+            score += 0.2
+        elif word_count > 50:
+            score += 0.1
+            
+        # 2. Relevance to query (0-0.4)
+        # Use metadata score which combines vector and text similarity
+        relevance = doc.metadata.get("score", 0)
+        score += 0.4 * relevance
+        
+        # 3. Content type appropriateness (0-0.3)
+        content_type = doc.metadata.get("type", "")
+        query_lower = query.lower()
+        
+        # Map query intent to appropriate content types
+        if any(term in query_lower for term in ["explain", "what is", "how do", "why"]):
+            if content_type in ["Para", "Example"]:
+                score += 0.3
+            elif content_type == "Solution":
+                score += 0.2
+        elif any(term in query_lower for term in ["practice", "exercise", "problem"]):
+            if content_type in ["Exercise", "Problem"]:
+                score += 0.3
+            elif content_type == "Example":
+                score += 0.2
+        elif any(term in query_lower for term in ["solution", "answer", "solve"]):
+            if content_type == "Solution":
+                score += 0.3
+            elif content_type == "Example":
+                score += 0.2
+        else:
+            # Default scoring for other queries
+            if content_type in ["Para", "Example"]:
+                score += 0.2
+            else:
+                score += 0.1
+                
+        return score 

@@ -53,23 +53,27 @@ class GraphRetrievalEngine:
     
     def __init__(
         self,
-        url: str,
-        username: str,
-        password: str,
-        database: str = "neo4j",
+        neo4j_url: str,
+        neo4j_username: str,
+        neo4j_password: str,
+        neo4j_database: str = "neo4j",
     ):
-        """Initialize the Graph Retrieval Engine.
+        """Initialize the graph retrieval engine.
         
         Args:
-            url: Neo4j connection URL
-            username: Neo4j username
-            password: Neo4j password
-            database: Neo4j database name
+            neo4j_url: URL of the Neo4j database
+            neo4j_username: Username for Neo4j authentication
+            neo4j_password: Password for Neo4j authentication
+            neo4j_database: Name of the Neo4j database to use
         """
-        self.url = url
-        self.username = username
-        self.password = password
-        self.database = database
+        self.neo4j_url = neo4j_url
+        self.neo4j_username = neo4j_username
+        self.neo4j_password = neo4j_password
+        self.neo4j_database = neo4j_database
+        
+        # Initialize logger
+        self.logger = logging.getLogger(__name__)
+        
         self.driver = None
         self.db_schema = None
         
@@ -77,10 +81,10 @@ class GraphRetrievalEngine:
         """Connect to Neo4j database and return the driver."""
         if not self.driver:
             self.driver = GraphDatabase.driver(
-                self.url, auth=(self.username, self.password)
+                self.neo4j_url, auth=(self.neo4j_username, self.neo4j_password)
             )
             # Test the connection
-            with self.driver.session(database=self.database) as session:
+            with self.driver.session(database=self.neo4j_database) as session:
                 session.run("RETURN 1")
                 logger.info("Successfully connected to Neo4j")
                 
@@ -104,7 +108,7 @@ class GraphRetrievalEngine:
     def _get_session(self) -> Session:
         """Get a new Neo4j session."""
         driver = self.connect()
-        return driver.session(database=self.database)
+        return driver.session(database=self.neo4j_database)
     
     def get_db_schema(self, force_refresh=False) -> Dict[str, Any]:
         """Get database schema information.
@@ -828,4 +832,180 @@ class GraphRetrievalEngine:
             words = [w for w in query_text.lower().split() if w not in stop_words and len(w) > 3]
             entities.extend(words)
             
-        return list(set(entities)) 
+        return list(set(entities))
+    
+    def retrieve_hierarchical_context(
+        self,
+        entity_id: str,
+        hierarchy_relationships: List[str] = None,
+        include_siblings: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Retrieve the hierarchical context of an entity (e.g., example → section → chapter).
+        
+        Args:
+            entity_id: The ID of the entity to get context for
+            hierarchy_relationships: List of relationships defining hierarchy
+            include_siblings: Whether to include sibling nodes
+            
+        Returns:
+            Dictionary with hierarchical context
+        """
+        if hierarchy_relationships is None:
+            hierarchy_relationships = ["PART_OF", "IN_SECTION", "IN_CHAPTER", "CONTAINS"]
+            
+        # Create relationship patterns with proper syntax
+        hierarchy_pattern = "|".join([f"{rel}" for rel in hierarchy_relationships])
+        
+        # Cypher query to retrieve hierarchy
+        cypher_query = f"""
+        MATCH (entity {{id: $entity_id}})
+        OPTIONAL MATCH path = (entity)-[r:{hierarchy_pattern}*]->(parent)
+        WITH entity, collect(path) as paths
+        OPTIONAL MATCH (sibling)-[:{hierarchy_pattern}]->(parent)
+        WHERE sibling <> entity AND $include_siblings
+        WITH entity, paths, collect(sibling) as siblings
+        RETURN entity, paths, siblings
+        """
+        
+        with self.driver.session(database=self.neo4j_database) as session:
+            try:
+                result = session.run(
+                    cypher_query,
+                    entity_id=entity_id,
+                    include_siblings=include_siblings
+                )
+                record = result.single()
+                if record:
+                    return {
+                        "entity": self._node_to_dict(record["entity"]),
+                        "hierarchy": self._paths_to_hierarchy(record["paths"]),
+                        "siblings": [self._node_to_dict(sibling) for sibling in record["siblings"]]
+                    }
+                return {}
+            except Exception as e:
+                # Log the error and return empty context
+                print(f"Error retrieving hierarchical context: {e}")
+                return {}
+    
+    def _node_to_dict(self, node) -> Dict[str, Any]:
+        """Convert a Neo4j node to a dictionary."""
+        result = dict(node.items())
+        result["__id__"] = node.id
+        result["__labels__"] = list(node.labels)
+        return result
+    
+    def _paths_to_hierarchy(self, paths) -> Dict[str, Any]:
+        """Convert Neo4j paths to a hierarchical structure."""
+        hierarchy = {}
+        for path in paths:
+            current = hierarchy
+            for node in path.nodes:
+                node_dict = self._node_to_dict(node)
+                node_id = node_dict["__id__"]
+                if node_id not in current:
+                    current[node_id] = {"data": node_dict, "children": {}}
+                current = current[node_id]["children"] 
+
+    def test_connection(self) -> bool:
+        """Test the connection to the Neo4j database.
+        
+        Returns:
+            True if connection is successful, otherwise raises an exception
+        """
+        from neo4j import GraphDatabase
+        
+        driver = GraphDatabase.driver(
+            self.neo4j_url,
+            auth=(self.neo4j_username, self.neo4j_password)
+        )
+        
+        try:
+            with driver.session(database=self.neo4j_database) as session:
+                # Run a simple query to check connectivity
+                result = session.run("RETURN 1 as success")
+                record = result.single()
+                return record and record["success"] == 1
+        finally:
+            driver.close()
+
+    def find_content_by_chapter_section(
+        self,
+        chapter: Optional[int] = None,
+        section: Optional[int] = None,
+        content_types: Optional[List[str]] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Find content by chapter and section numbers.
+        
+        Args:
+            chapter: Chapter number to filter by
+            section: Section number to filter by 
+            content_types: List of content types to include
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of content items matching the criteria
+        """
+        try:
+            with self.driver.session(database=self.neo4j_database) as session:
+                # Build query conditions
+                conditions = []
+                params = {}
+                
+                if chapter is not None:
+                    conditions.append("n.chapter = $chapter")
+                    params["chapter"] = chapter
+                    
+                if section is not None:
+                    conditions.append("n.section = $section")
+                    params["section"] = section
+                    
+                if content_types:
+                    conditions.append("any(label IN labels(n) WHERE label IN $content_types)")
+                    params["content_types"] = content_types
+                
+                # Add text content check
+                conditions.append(f"n.{self.text_node_property} IS NOT NULL")
+                conditions.append(f"n.{self.text_node_property} <> ''")
+                
+                # Combine conditions
+                where_clause = " AND ".join(conditions) if conditions else "TRUE"
+                
+                # Build and execute query
+                query = f"""
+                MATCH (n)
+                WHERE {where_clause}
+                RETURN n, labels(n) as labels
+                ORDER BY n.chapter, n.section
+                LIMIT {limit}
+                """
+                
+                result = session.run(query, params)
+                
+                items = []
+                for record in result:
+                    node = record["n"]
+                    labels = record["labels"]
+                    
+                    # Extract text and metadata
+                    text = node.get(self.text_node_property, "")
+                    metadata = {
+                        "node_id": node.id,
+                        "labels": labels,
+                        "chapter": node.get("chapter"),
+                        "section": node.get("section"),
+                        **{k: v for k, v in node.items() 
+                           if k not in [self.text_node_property, "chapter", "section"]}
+                    }
+                    
+                    items.append({
+                        "content": text,
+                        "metadata": metadata
+                    })
+                    
+                return items
+                
+        except Exception as e:
+            logger.error(f"Error in find_content_by_chapter_section: {e}")
+            return [] 
